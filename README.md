@@ -9,6 +9,6 @@ This project is designed to compare the profitability and stability of liquidity
 
 - Some popular pools, such as the [USDC pool on Aave3](https://defillama.com/yields/pool/aa70268e-4b52-42bf-a116-608b370f9501), are becoming increasingly profitable over time.
   
-  <img width="964" alt="image" src="https://github.com/user-attachments/assets/a559b97b-3ea2-4a66-9a6c-74530c35afdd">
+  <img width="959" alt="image" src="https://github.com/user-attachments/assets/fbdf285a-0ee2-4ca3-a296-72afacea8c98">
 
 
