@@ -57,9 +57,20 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 - `ai_yield_cli.py`: CLI for rankings and IL CSV export.
 - `defillama_api_yields.ipynb`: notebook with demos (latest sections appended).
 - `defillama_api_yields_historical_data.ipynb`: earlier exploration notebook.
+- `cache_utils.py`: cache/fetch daily pool snapshots to `data/`.
+- `backtest.py`: simple top-N rotation backtester using cached snapshots.
 
 ## Optional: LLM setup
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 Then run the optional justification cell in the notebook.
+
+## Backtesting (top-N rotation)
+- Cache today’s snapshot: `python3 -m venv .venv && source .venv/bin/activate && python3 -m pip install pandas numpy matplotlib openai` (once), then `python3 -c "import cache_utils; cache_utils.ensure_today_snapshot()"`.
+- Run backtest over latest 30 snapshots (or fewer if not present):  
+  ```bash
+  python3 backtest.py --top 10 --days 30 --il heuristic --min-tvl 1_000_000 --csv equity.csv
+  ```
+- `--il` modes: `none` (default), `il7d` (use il7d/7 per day when available), `heuristic` (volatility-based haircut).
+- Snapshots are stored in `data/pools_YYYY-MM-DD.json`. The backtest uses the most recent N snapshots available. If none exist, it fetches today’s first.
