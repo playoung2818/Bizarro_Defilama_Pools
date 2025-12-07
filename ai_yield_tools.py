@@ -56,15 +56,42 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
     work["apy"] = pd.to_numeric(work.get("apy"), errors="coerce")
 
     work["liquidity_depth"] = _safe_log10(work["tvlUsd"])
-    work["token_volatility"] = (work["volumeUsd7d"] / (work["tvlUsd"].abs() + 1)).fillna(0)
+    volume7d = pd.to_numeric(work.get("volumeUsd7d"), errors="coerce")
+    volume1d = pd.to_numeric(work.get("volumeUsd1d"), errors="coerce")
+    volume_proxy = volume7d.fillna(volume1d * 7)
+    vol_missing = volume_proxy.isna()
+    work["token_volatility"] = (volume_proxy / (work["tvlUsd"].abs() + 1)).fillna(5)
+    work["volume_missing_penalty"] = vol_missing.astype(float) * 1.5
     work["age_of_pool"] = _parse_age(work.get("apyBaseInception"))
     work["smart_contract_risk"] = work.get("ilRisk").map({"yes": 1, "no": 0}).fillna(0.5)
+
+    exposure = work.get("exposure", pd.Series(index=work.index))
+    stablecoin = work.get("stablecoin", pd.Series(index=work.index)).fillna(False)
+    il7d = pd.to_numeric(work.get("il7d"), errors="coerce").fillna(0)
+    il_penalty = []
+    for exp, is_stable, il_val, vol in zip(exposure, stablecoin, il7d, work["token_volatility"]):
+        if is_stable:
+            base = 0.0
+        elif isinstance(exp, str) and exp.lower() == "single":
+            base = 0.0  # single-sided has negligible IL
+        elif isinstance(exp, str) and exp.lower() == "hedged":
+            base = 0.3
+        elif isinstance(exp, str) and exp.lower() == "multi":
+            base = 1.0
+        else:
+            base = 0.6
+        # amplify by recent reported IL and volatility proxy
+        penalty = base + 5 * max(il_val, 0) + 0.1 * min(vol, 5)
+        il_penalty.append(penalty)
+    work["il_penalty"] = pd.Series(il_penalty, index=work.index)
 
     work["risk_score"] = (
         -1.2 * work["token_volatility"].clip(upper=5)
         + 0.8 * work["liquidity_depth"]
         + 0.5 * np.log1p(work["age_of_pool"])
         - 1.0 * work["smart_contract_risk"]
+        - 1.0 * work["volume_missing_penalty"]
+        - 1.0 * work["il_penalty"]
     )
     work["final_score"] = work["risk_score"] * 0.7 + work["apy"].fillna(0) * 0.3
     return work.sort_values(["risk_score", "apy"], ascending=[False, False])

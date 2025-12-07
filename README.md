@@ -28,9 +28,13 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 
 ## How scoring works (in `ai_yield_tools.py`)
 - `liquidity_depth = log10(tvlUsd + 1)` (higher TVL → safer)
-- `token_volatility = volumeUsd7d / (tvlUsd + 1)` (lower → safer, clipped at 5)
+- `token_volatility = volumeProxy / (tvlUsd + 1)` where `volumeProxy = volumeUsd7d` or `7 * volumeUsd1d` when 7d is missing; if both volumes are missing we treat volatility as high (5) and add a penalty (lower → safer, clipped at 5)
 - `age_of_pool` = days since `apyBaseInception` (older → safer)
 - `smart_contract_risk` from `ilRisk` (`yes`=1, `no`=0, unknown=0.5)
+- `il_penalty` (impermanent-loss risk) from `stablecoin`, `exposure`, `il7d`, and volatility:
+  - stablecoin: 0
+  - exposure single: 0; hedged: 0.3; multi: 1.0; other/unknown: 0.6
+  - plus `5 * max(il7d, 0)` and `0.1 * min(token_volatility, 5)` as small amplifiers
 
 `risk_score` (higher = safer):
 ```
@@ -38,6 +42,8 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 +0.8 * liquidity_depth
 +0.5 * ln(1 + age_of_pool_days)
 -1.0 * smart_contract_risk
+-1.0 * volume_missing_penalty
+-1.0 * il_penalty
 ```
 `final_score = 0.7 * risk_score + 0.3 * apy`  (sorted by risk_score desc, then apy desc)
 
