@@ -59,6 +59,7 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 - `defillama_api_yields_historical_data.ipynb`: earlier exploration notebook.
 - `cache_utils.py`: cache/fetch daily pool snapshots to `data/`.
 - `backtest.py`: simple top-N rotation backtester using cached snapshots.
+- `runner.py`: loops daily to cache and backtest (Pi-friendly).
 
 ## Optional: LLM setup
 ```bash
@@ -74,3 +75,10 @@ Then run the optional justification cell in the notebook.
   ```
 - `--il` modes: `none` (default), `il7d` (use il7d/7 per day when available), `heuristic` (volatility-based haircut).
 - Snapshots are stored in `data/pools_YYYY-MM-DD.json`. The backtest uses the most recent N snapshots available. If none exist, it fetches today’s first.
+
+## Daily runner (e.g., on a Pi)
+Run continuously to refresh the snapshot and backtest once per day:
+```bash
+python3 runner.py
+```
+Customize `top_n`, `days`, `il_mode`, `min_tvl`, or CSV path inside `runner.py` if desired. For cron/systemd, call `cache_utils.ensure_today_snapshot()` then `backtest.py` in a job instead of a long-lived loop.
