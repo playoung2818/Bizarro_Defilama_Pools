@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from backtest import run_backtest
+from backtest import run_backtest, summarize
 from cache_utils import ensure_today_snapshot
 
 
@@ -23,6 +23,9 @@ def run_daily() -> None:
         csv_path=Path("equity.csv"),
     )
     if not eq.empty:
+        summary = summarize(eq)
+        if summary:
+            print("Summary:", summary)
         print(eq.tail())
     else:
         print("No data to backtest.")
