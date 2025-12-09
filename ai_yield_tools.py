@@ -93,7 +93,10 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
         - 1.0 * work["volume_missing_penalty"]
         - 1.0 * work["il_penalty"]
     )
-    work["final_score"] = work["risk_score"] * 0.7 + work["apy"].fillna(0) * 0.3
+    # Require a minimum APY floor and rebalance weights to emphasize yield more.
+    apy = work["apy"].fillna(0)
+    apy = apy.where(apy >= 4, 0)  # zero out pools with APY < 4%
+    work["final_score"] = work["risk_score"] * 0.5 + apy * 0.5
     return work.sort_values(["risk_score", "apy"], ascending=[False, False])
 
 

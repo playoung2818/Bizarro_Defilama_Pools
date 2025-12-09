@@ -45,7 +45,7 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 -1.0 * volume_missing_penalty
 -1.0 * il_penalty
 ```
-`final_score = 0.7 * risk_score + 0.3 * apy`  (sorted by risk_score desc, then apy desc)
+`final_score = 0.5 * risk_score + 0.5 * apy`, with APY floored: APY < 4% is treated as 0. Pools are sorted by risk_score desc, then apy desc.
 
 ## Impermanent Loss functions (in `il_tools.py`)
 - `il_curve(price_changes)`: DataFrame of IL% vs price change for a 50/50 AMM.
