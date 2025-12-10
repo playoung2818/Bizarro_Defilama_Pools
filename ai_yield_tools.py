@@ -158,4 +158,97 @@ __all__ = [
     "score_pools",
     "top_safe_apys",
     "llm_rank_explanations",
+    "tag_pools",
 ]
+
+# --------- Pool tagging helpers for specific LP archetypes ---------
+
+STABLE_SYMBOLS = {
+    "USDC",
+    "USDT",
+    "DAI",
+    "TUSD",
+    "BUSD",
+    "FRAX",
+    "GUSD",
+    "LUSD",
+    "SUSD",
+    "USDD",
+    "USD",
+}
+
+LST_SYMBOLS = {
+    "STETH",
+    "WSTETH",
+    "RETH",
+    "CBETH",
+    "SFRXETH",
+    "WBETH",
+    "ANKRETH",
+    "SWETH",
+}
+
+WRAPPER_BASE = {
+    "ETH": "ETH",
+    "WETH": "ETH",
+    "STETH": "ETH",
+    "WSTETH": "ETH",
+    "RETH": "ETH",
+    "CBETH": "ETH",
+    "SFRXETH": "ETH",
+    "WBETH": "ETH",
+    "ANKRETH": "ETH",
+    "SWETH": "ETH",
+    "BTC": "BTC",
+    "WBTC": "BTC",
+    "TBTC": "BTC",
+}
+
+
+def _split_symbol(sym: str) -> list[str]:
+    if not isinstance(sym, str):
+        return []
+    parts = []
+    for delim in ("-", "/", " "):
+        if delim in sym:
+            parts = sym.replace(" ", delim).split(delim)
+            break
+    if not parts:
+        parts = [sym]
+    return [p.strip().upper() for p in parts if p.strip()]
+
+
+def tag_pools(df: pd.DataFrame) -> pd.DataFrame:
+    """Tag pools for pegged/wrapper/index archetypes."""
+    work = df.copy()
+    stable_flags = []
+    lst_flags = []
+    wrapper_flags = []
+    index_flags = []
+    base_match_flags = []
+
+    meta = work.get("poolMeta")
+    for sym, meta_val in zip(work.get("symbol", []), meta if meta is not None else []):
+        tokens = _split_symbol(sym)
+        upper_meta = str(meta_val).lower() if meta_val is not None else ""
+        is_stable = len(tokens) >= 2 and all(t in STABLE_SYMBOLS for t in tokens)
+        is_lst = any(t in LST_SYMBOLS for t in tokens) and any(t in ("ETH", "WETH") for t in tokens)
+
+        bases = [WRAPPER_BASE.get(t) for t in tokens if WRAPPER_BASE.get(t)]
+        is_wrapper_pair = len(set(bases)) == 1 and len(tokens) >= 2 and len(set(tokens)) > 1
+        is_base_pair = len(tokens) >= 2 and len(set(tokens)) == 1  # e.g., wETH/ETH labeled same symbol
+
+        is_indexish = ("index" in upper_meta) or any(word in upper_meta for word in ("basket", "set ")) or ("INDEX" in sym if isinstance(sym, str) else False)
+
+        stable_flags.append(is_stable)
+        lst_flags.append(is_lst)
+        wrapper_flags.append(is_wrapper_pair or is_base_pair)
+        index_flags.append(is_indexish)
+        base_match_flags.append(len(set(bases)) == 1 and len(bases) >= 2)
+
+    work["tag_stable_pegged"] = stable_flags
+    work["tag_lst_pair"] = lst_flags
+    work["tag_wrapper_pair"] = wrapper_flags
+    work["tag_index_basket"] = index_flags
+    work["tag_same_base"] = base_match_flags
+    return work

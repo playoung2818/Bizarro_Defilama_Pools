@@ -18,6 +18,7 @@ python3 -m pip install pandas numpy matplotlib openai  # openai optional
 ```bash
 python3 ai_yield_cli.py top --top 5          # print Top 5 safest APYs today
 python3 ai_yield_cli.py il --csv il_curve.csv  # write IL curve CSV (omit --csv to print head)
+python3 ai_yield_cli.py find --limit 20        # show LPs tagged as pegged/wrapper/index; add --stable/--lst/--wrapper/--index to focus
 ```
 
 ## Notebook usage
@@ -60,6 +61,7 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 - `cache_utils.py`: cache/fetch daily pool snapshots to `data/`.
 - `backtest.py`: simple top-N rotation backtester using cached snapshots.
 - `runner.py`: loops daily to cache and backtest (Pi-friendly).
+- Pool tagging helpers for pegged/wrapper/index live in `ai_yield_tools.tag_pools()` and the CLI `find` command.
 
 ## Optional: LLM setup
 ```bash
