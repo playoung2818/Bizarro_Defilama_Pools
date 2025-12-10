@@ -20,7 +20,7 @@ import typing as t
 import numpy as np
 import pandas as pd
 
-from ai_yield_tools import score_pools, top_safe_apys
+from ai_yield_tools import score_pools, tag_pools, top_safe_apys
 from cache_utils import ensure_today_snapshot, list_snapshots, load_snapshot
 
 
@@ -42,7 +42,14 @@ def apply_il_penalty(row: pd.Series, mode: str = "none") -> float:
     return min(vol_proxy, 5) * -0.0005  # -5 bps per unit vol capped
 
 
-def run_backtest(top_n: int, days: int, il_mode: str, min_tvl: float, csv_path: Path | None) -> pd.DataFrame:
+def run_backtest(
+    top_n: int,
+    days: int,
+    il_mode: str,
+    min_tvl: float,
+    csv_path: Path | None,
+    include_tags: list[str] | None = None,
+) -> pd.DataFrame:
     snaps = list_snapshots()
     if not snaps:
         ensure_today_snapshot()
@@ -54,6 +61,10 @@ def run_backtest(top_n: int, days: int, il_mode: str, min_tvl: float, csv_path: 
     for snap_path in snaps:
         df = load_snapshot(snap_path)
         scored = score_pools(df)
+        if include_tags:
+            tagged = tag_pools(scored)
+            mask = tagged[include_tags].any(axis=1)
+            scored = tagged.loc[mask]
         if min_tvl > 0:
             scored = scored[scored["tvlUsd"] >= min_tvl]
         ranked = top_safe_apys(scored, n=top_n)
@@ -101,12 +112,25 @@ def parse_args(argv=None):
     p.add_argument("--il", choices=["none", "il7d", "heuristic"], default="none", help="apply IL penalty mode")
     p.add_argument("--min-tvl", type=float, default=0, help="minimum TVL filter (USD)")
     p.add_argument("--csv", type=Path, help="optional path to write equity curve CSV")
+    p.add_argument("--stable", action="store_true", help="only include stable-stable pools")
+    p.add_argument("--lst", action="store_true", help="only include LST/ETH style pools")
+    p.add_argument("--wrapper", action="store_true", help="only include wrapper pairs (wBTC/tBTC, wETH/ETH, etc.)")
+    p.add_argument("--index", action="store_true", help="only include index/basket style pools")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    eq = run_backtest(args.top, args.days, args.il, args.min_tvl, args.csv)
+    tags = []
+    if args.stable:
+        tags.append("tag_stable_pegged")
+    if args.lst:
+        tags.append("tag_lst_pair")
+    if args.wrapper:
+        tags.append("tag_wrapper_pair")
+    if args.index:
+        tags.append("tag_index_basket")
+    eq = run_backtest(args.top, args.days, args.il, args.min_tvl, args.csv, include_tags=tags or None)
     summary = summarize(eq)
     if summary:
         print("Summary:", summary)
