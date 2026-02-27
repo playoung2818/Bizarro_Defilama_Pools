@@ -44,9 +44,15 @@ def ensure_today_snapshot() -> Path:
     path = snapshot_filename()
     if path.exists():
         return path
-    df = fetch_pools_df()
-    save_snapshot(df, datetime.now(timezone.utc))
-    return path
+    try:
+        df = fetch_pools_df()
+        save_snapshot(df, datetime.now(timezone.utc))
+        return path
+    except FetchError:
+        existing = list_snapshots()
+        if existing:
+            return existing[-1]
+        raise
 
 
 def fetch_and_cache(ts: datetime | None = None) -> Path:

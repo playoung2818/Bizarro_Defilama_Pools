@@ -22,6 +22,7 @@ import pandas as pd
 
 from ai_yield_tools import score_pools, tag_pools, top_safe_apys
 from cache_utils import ensure_today_snapshot, list_snapshots, load_snapshot
+from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 
 def apy_to_daily_rate(apy: float) -> float:
@@ -49,18 +50,25 @@ def run_backtest(
     min_tvl: float,
     csv_path: Path | None,
     include_tags: list[str] | None = None,
+    model_type: str = "heuristic",
 ) -> pd.DataFrame:
     snaps = list_snapshots()
     if not snaps:
         ensure_today_snapshot()
         snaps = list_snapshots()
     snaps = snaps[-days:]  # take the latest N snapshots available
+    xgb_model = None
+    if model_type == "xgb":
+        xgb_model = train_xgb_from_cache(max_pairs=max(days, 30))
 
     equity = []
     value = 1.0  # start at 1 unit capital
     for snap_path in snaps:
         df = load_snapshot(snap_path)
-        scored = score_pools(df)
+        if model_type == "xgb" and xgb_model is not None:
+            scored = score_pools_xgb(df, xgb_model)
+        else:
+            scored = score_pools(df)
         if include_tags:
             tagged = tag_pools(scored)
             mask = tagged[include_tags].any(axis=1)
@@ -97,11 +105,18 @@ def summarize(equity: pd.DataFrame) -> dict[str, float]:
     cumulative = equity["value"].iloc[-1] - 1
     max_drawdown = ((equity["value"].cummax() - equity["value"]) / equity["value"].cummax()).max()
     vol = returns.std() * math.sqrt(365)
+    mean_daily = returns.mean()
+    annualized_return = (1 + mean_daily) ** 365 - 1
+    sharpe_like = (mean_daily / returns.std() * math.sqrt(365)) if returns.std() > 0 else 0.0
+    win_rate = float((returns > 0).mean()) if len(returns) else 0.0
     return {
         "days": len(equity),
         "cumulative_return": cumulative,
+        "annualized_return": annualized_return,
         "max_drawdown": max_drawdown,
         "annualized_vol": vol,
+        "sharpe_like": sharpe_like,
+        "win_rate": win_rate,
     }
 
 
@@ -116,6 +131,7 @@ def parse_args(argv=None):
     p.add_argument("--lst", action="store_true", help="only include LST/ETH style pools")
     p.add_argument("--wrapper", action="store_true", help="only include wrapper pairs (wBTC/tBTC, wETH/ETH, etc.)")
     p.add_argument("--index", action="store_true", help="only include index/basket style pools")
+    p.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model for ranking")
     return p.parse_args(argv)
 
 
@@ -130,7 +146,19 @@ def main(argv=None) -> int:
         tags.append("tag_wrapper_pair")
     if args.index:
         tags.append("tag_index_basket")
-    eq = run_backtest(args.top, args.days, args.il, args.min_tvl, args.csv, include_tags=tags or None)
+    try:
+        eq = run_backtest(
+            args.top,
+            args.days,
+            args.il,
+            args.min_tvl,
+            args.csv,
+            include_tags=tags or None,
+            model_type=args.model,
+        )
+    except (XGBUnavailableError, XGBTrainingError) as exc:
+        print(f"Error: {exc}")
+        return 1
     summary = summarize(eq)
     if summary:
         print("Summary:", summary)

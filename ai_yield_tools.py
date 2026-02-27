@@ -4,7 +4,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
-import os
 import typing as t
 import urllib.request
 
@@ -42,23 +41,19 @@ def _parse_age(days_series: pd.Series) -> pd.Series:
     return (now - parsed).dt.days.fillna(0)
 
 
-def score_pools(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Attach heuristic risk and final scores.
-
-    risk_score: higher is safer. Combines liquidity depth, inverse volatility,
-    age, and smart-contract risk flag. final_score also rewards APY.
-    """
+def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Build feature set used by heuristic and ML scoring."""
     work = df.copy()
 
     work["tvlUsd"] = pd.to_numeric(work.get("tvlUsd"), errors="coerce")
     work["volumeUsd7d"] = pd.to_numeric(work.get("volumeUsd7d"), errors="coerce")
+    work["volumeUsd1d"] = pd.to_numeric(work.get("volumeUsd1d"), errors="coerce")
     work["apy"] = pd.to_numeric(work.get("apy"), errors="coerce")
+    # Exclude pools above the APY ceiling for conservative screening.
+    work = work[work["apy"].notna() & (work["apy"] <= 50)].copy()
 
     work["liquidity_depth"] = _safe_log10(work["tvlUsd"])
-    volume7d = pd.to_numeric(work.get("volumeUsd7d"), errors="coerce")
-    volume1d = pd.to_numeric(work.get("volumeUsd1d"), errors="coerce")
-    volume_proxy = volume7d.fillna(volume1d * 7)
+    volume_proxy = work["volumeUsd7d"].fillna(work["volumeUsd1d"] * 7)
     vol_missing = volume_proxy.isna()
     work["token_volatility"] = (volume_proxy / (work["tvlUsd"].abs() + 1)).fillna(5)
     work["volume_missing_penalty"] = vol_missing.astype(float) * 1.5
@@ -84,6 +79,17 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
         penalty = base + 5 * max(il_val, 0) + 0.1 * min(vol, 5)
         il_penalty.append(penalty)
     work["il_penalty"] = pd.Series(il_penalty, index=work.index)
+    return work
+
+
+def score_pools(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach heuristic risk and final scores.
+
+    risk_score: higher is safer. Combines liquidity depth, inverse volatility,
+    age, and smart-contract risk flag. final_score also rewards APY.
+    """
+    work = prepare_features(df)
 
     work["risk_score"] = (
         -1.2 * work["token_volatility"].clip(upper=5)
@@ -97,11 +103,12 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
     apy = work["apy"].fillna(0)
     apy = apy.where(apy >= 4, 0)  # zero out pools with APY < 4%
     work["final_score"] = work["risk_score"] * 0.5 + apy * 0.5
-    return work.sort_values(["risk_score", "apy"], ascending=[False, False])
+    return work.sort_values(["final_score", "risk_score", "apy"], ascending=[False, False, False])
 
 
 def top_safe_apys(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     """Return the top N pools with the highest safety score."""
+    ranked = df.sort_values(["final_score", "risk_score", "apy"], ascending=[False, False, False]).head(n)
     cols = [
         "project",
         "chain",
@@ -113,7 +120,7 @@ def top_safe_apys(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
         "final_score",
     ]
     available_cols = [c for c in cols if c in df.columns]
-    return df.head(n)[available_cols]
+    return ranked[available_cols]
 
 
 def llm_rank_explanations(
@@ -155,6 +162,7 @@ def llm_rank_explanations(
 __all__ = [
     "FetchError",
     "fetch_pools_df",
+    "prepare_features",
     "score_pools",
     "top_safe_apys",
     "llm_rank_explanations",

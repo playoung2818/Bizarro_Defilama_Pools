@@ -15,6 +15,8 @@ from ai_yield_tools import (
     top_safe_apys,
 )
 from il_tools import il_curve
+from terminal_dashboard import run_dashboard_loop
+from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 
 def cmd_top(args: argparse.Namespace) -> int:
@@ -24,7 +26,15 @@ def cmd_top(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    ranked = score_pools(pools_df)
+    try:
+        if args.model == "xgb":
+            model = train_xgb_from_cache(max_pairs=90)
+            ranked = score_pools_xgb(pools_df, model)
+        else:
+            ranked = score_pools(pools_df)
+    except (XGBUnavailableError, XGBTrainingError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     topn = top_safe_apys(ranked, n=args.top)
     pd.set_option("display.max_rows", args.top)
     print(topn)
@@ -67,12 +77,35 @@ def cmd_find(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    tag_filters = []
+    if args.stable:
+        tag_filters.append("stable")
+    if args.lst:
+        tag_filters.append("lst")
+    if args.wrapper:
+        tag_filters.append("wrapper")
+    if args.index:
+        tag_filters.append("index")
+    return run_dashboard_loop(
+        top_n=args.top,
+        lookback_days=args.days,
+        min_tvl=args.min_tvl,
+        il_mode=args.il,
+        model_type=args.model,
+        tag_filters=tag_filters or None,
+        refresh_seconds=args.refresh,
+        once=args.once,
+    )
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command")
 
     p_top = sub.add_parser("top", help="Show Top N safe APYs")
     p_top.add_argument("--top", type=int, default=5, help="Number of pools to show (default: 5)")
+    p_top.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
     p_top.set_defaults(func=cmd_top)
 
     p_il = sub.add_parser("il", help="Output impermanent loss curve")
@@ -86,6 +119,20 @@ def main(argv=None) -> int:
     p_find.add_argument("--index", action="store_true", help="index/basket style pools")
     p_find.add_argument("--limit", type=int, default=20, help="rows to display")
     p_find.set_defaults(func=cmd_find)
+
+    p_dash = sub.add_parser("dashboard", help="Run terminal risk dashboard")
+    p_dash.add_argument("--top", type=int, default=10, help="Top N pools to show")
+    p_dash.add_argument("--days", type=int, default=30, help="Lookback days for backtest summary")
+    p_dash.add_argument("--min-tvl", type=float, default=1_000_000, help="Minimum TVL filter (USD)")
+    p_dash.add_argument("--il", choices=["none", "il7d", "heuristic"], default="heuristic", help="IL penalty mode")
+    p_dash.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_dash.add_argument("--stable", action="store_true", help="filter to stable-stable pools")
+    p_dash.add_argument("--lst", action="store_true", help="filter to LST/ETH pools")
+    p_dash.add_argument("--wrapper", action="store_true", help="filter to wrapper pairs")
+    p_dash.add_argument("--index", action="store_true", help="filter to index/basket pools")
+    p_dash.add_argument("--refresh", type=int, default=30, help="refresh interval in seconds")
+    p_dash.add_argument("--once", action="store_true", help="print once and exit")
+    p_dash.set_defaults(func=cmd_dashboard)
 
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

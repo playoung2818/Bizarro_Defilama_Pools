@@ -11,14 +11,19 @@ This project compares the profitability and stability of liquidity pools on [DeF
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install pandas numpy matplotlib openai  # openai optional
+python3 -m pip install pandas numpy matplotlib openai xgboost  # openai/xgboost optional
 ```
 
 ## CLI usage
 ```bash
 python3 ai_yield_cli.py top --top 5          # print Top 5 safest APYs today
+python3 ai_yield_cli.py top --top 10 --model xgb   # XGBoost score model (needs cached history)
 python3 ai_yield_cli.py il --csv il_curve.csv  # write IL curve CSV (omit --csv to print head)
 python3 ai_yield_cli.py find --limit 20        # show LPs tagged as pegged/wrapper/index; add --stable/--lst/--wrapper/--index to focus
+python3 ai_yield_cli.py dashboard --once       # one-shot terminal dashboard
+python3 ai_yield_cli.py dashboard --once --model xgb  # one-shot dashboard using XGBoost model
+python3 ai_yield_cli.py dashboard              # live dashboard (refresh every 30s)
+python3 ai_yield_cli.py dashboard --stable --top 15 --days 60 --min-tvl 5000000 --il heuristic
 ```
 
 ## Notebook usage
@@ -76,7 +81,40 @@ Then run the optional justification cell in the notebook.
   python3 backtest.py --top 10 --days 30 --il heuristic --min-tvl 1_000_000 --csv equity.csv
   ```
 - `--il` modes: `none` (default), `il7d` (use il7d/7 per day when available), `heuristic` (volatility-based haircut).
+- `--model` modes: `heuristic` (hand-tuned formula), `xgb` (XGBoost model trained from cached snapshot history).
 - Snapshots are stored in `data/pools_YYYY-MM-DD.json`. The backtest uses the most recent N snapshots available. If none exist, it fetches today’s first.
+- Summary metrics include: cumulative return, annualized return, annualized volatility, max drawdown, sharpe-like ratio, and win rate.
+
+## Terminal dashboard
+- `dashboard` mode gives a risk-monitoring view directly in terminal:
+  - Current pool coverage and tag counts (stable/LST/wrapper/index)
+  - Backtest risk/return summary (annualized return, vol, MDD, sharpe-like, win rate)
+  - Top-N candidate table based on risk-aware ranking
+  - Recent equity curve tail
+- If live fetch is unavailable, dashboard falls back to the latest cached snapshot in `data/`.
+
+## Pure risk model direction (no return optimization)
+If the objective is risk quantification only, use a pure risk pipeline:
+
+- Target variable: future risk event label (for example `risk_event_1d` or `risk_event_7d`), not return.
+  - Example: label = 1 if next period has severe drawdown/depeg/liquidity shock, else 0.
+- Output: calibrated risk probability `P(risk_event)` and a normalized risk score:
+  - `RiskScore = 100 * P(risk_event)`
+- Risk tiers:
+  - Low: `< 20`
+  - Medium: `20 - 50`
+  - High: `> 50`
+- Validation: out-of-sample walk-forward only (no random split).
+- Recommended metrics:
+  - `PR-AUC`, `ROC-AUC`
+  - `Brier score` (probability quality)
+  - calibration curve
+  - recall on high-risk bucket
+
+This supports risk-tolerance filtering directly:
+- Conservative: `RiskScore <= 20`
+- Balanced: `RiskScore <= 35`
+- Aggressive: `RiskScore <= 50`
 
 ## Daily runner (e.g., on a Pi)
 Run continuously to refresh the snapshot and backtest once per day:
