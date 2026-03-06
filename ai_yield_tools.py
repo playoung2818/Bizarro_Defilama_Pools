@@ -110,6 +110,7 @@ def top_safe_apys(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     """Return the top N pools with the highest safety score."""
     ranked = df.sort_values(["final_score", "risk_score", "apy"], ascending=[False, False, False]).head(n)
     cols = [
+        "pool",
         "project",
         "chain",
         "symbol",
@@ -118,6 +119,9 @@ def top_safe_apys(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
         "volumeUsd7d",
         "risk_score",
         "final_score",
+        "url",
+        "underlyingTokens",
+        "poolMeta",
     ]
     available_cols = [c for c in cols if c in df.columns]
     return ranked[available_cols]

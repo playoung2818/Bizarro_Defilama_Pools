@@ -19,6 +19,75 @@ from terminal_dashboard import run_dashboard_loop
 from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 
+def _rank_with_model(args: argparse.Namespace, pools_df: pd.DataFrame) -> pd.DataFrame:
+    if args.model == "xgb":
+        model = train_xgb_from_cache(max_pairs=90)
+        return score_pools_xgb(pools_df, model)
+    return score_pools(pools_df)
+
+
+def _fmt_tokens(value) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    if pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _format_compact_top(df: pd.DataFrame) -> pd.DataFrame:
+    view = df.copy()
+    if "pool" in view.columns:
+        view["pool"] = view["pool"].astype(str).str.slice(0, 8)
+    if "apy" in view.columns:
+        view["apy"] = pd.to_numeric(view["apy"], errors="coerce").round(2)
+    if "tvlUsd" in view.columns:
+        view["tvlUsd"] = pd.to_numeric(view["tvlUsd"], errors="coerce").map(
+            lambda x: f"{x:,.0f}" if pd.notna(x) else ""
+        )
+    if "risk_score" in view.columns:
+        view["risk_score"] = pd.to_numeric(view["risk_score"], errors="coerce").round(3)
+    if "final_score" in view.columns:
+        view["final_score"] = pd.to_numeric(view["final_score"], errors="coerce").round(3)
+    if "url" in view.columns:
+        view["url"] = view["url"].astype(str).str.slice(0, 60)
+
+    cols = [
+        "pool",
+        "project",
+        "chain",
+        "symbol",
+        "apy",
+        "tvlUsd",
+        "risk_score",
+        "final_score",
+        "url",
+    ]
+    cols = [c for c in cols if c in view.columns]
+    return view[cols]
+
+
+def _print_stake_guide(row: pd.Series) -> None:
+    print("=" * 90)
+    print(f"Pool index: {row.name}")
+    print(f"Pool id: {row.get('pool', '')}")
+    print(f"Project/Chain: {row.get('project', '')} / {row.get('chain', '')}")
+    print(f"Symbol: {row.get('symbol', '')}")
+    print(f"APY: {row.get('apy', '')}")
+    print(f"TVL(USD): {row.get('tvlUsd', '')}")
+    print(f"URL: {row.get('url', '')}")
+    print(f"Underlying tokens: {_fmt_tokens(row.get('underlyingTokens'))}")
+    pool_meta = row.get("poolMeta", "")
+    if isinstance(pool_meta, str) and pool_meta.strip():
+        print(f"Pool meta: {pool_meta}")
+    print("")
+    print("How to stake:")
+    print("1. Open the URL above (or the protocol app page for this pool).")
+    print("2. Connect wallet on the same chain shown above.")
+    print("3. If this is a vault over an LP token, first mint/get the LP token from the source AMM.")
+    print("4. Approve token spending, then Deposit/Stake.")
+    print("5. Verify position in your wallet/protocol dashboard and monitor exit liquidity.")
+
+
 def cmd_top(args: argparse.Namespace) -> int:
     try:
         pools_df = fetch_pools_df()
@@ -27,17 +96,16 @@ def cmd_top(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        if args.model == "xgb":
-            model = train_xgb_from_cache(max_pairs=90)
-            ranked = score_pools_xgb(pools_df, model)
-        else:
-            ranked = score_pools(pools_df)
+        ranked = _rank_with_model(args, pools_df)
     except (XGBUnavailableError, XGBTrainingError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     topn = top_safe_apys(ranked, n=args.top)
     pd.set_option("display.max_rows", args.top)
-    print(topn)
+    if args.full:
+        print(topn.to_string())
+    else:
+        print(_format_compact_top(topn).to_string())
     return 0
 
 
@@ -99,6 +167,42 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_stake(args: argparse.Namespace) -> int:
+    try:
+        pools_df = fetch_pools_df()
+    except FetchError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        ranked = _rank_with_model(args, pools_df)
+    except (XGBUnavailableError, XGBTrainingError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    row = None
+    if args.index is not None:
+        try:
+            row = ranked.loc[int(args.index)]
+        except KeyError:
+            print(f"Error: index {args.index} not found in current ranked DataFrame.", file=sys.stderr)
+            return 1
+    elif args.pool is not None:
+        if "pool" not in ranked.columns:
+            print("Error: pool id column is missing in fetched data.", file=sys.stderr)
+            return 1
+        matches = ranked[ranked["pool"].astype(str) == str(args.pool)]
+        if matches.empty:
+            print(f"Error: pool id {args.pool} not found.", file=sys.stderr)
+            return 1
+        row = matches.iloc[0]
+    else:
+        row = ranked.iloc[0]
+
+    _print_stake_guide(row)
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command")
@@ -106,6 +210,7 @@ def main(argv=None) -> int:
     p_top = sub.add_parser("top", help="Show Top N safe APYs")
     p_top.add_argument("--top", type=int, default=5, help="Number of pools to show (default: 5)")
     p_top.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_top.add_argument("--full", action="store_true", help="show full raw columns")
     p_top.set_defaults(func=cmd_top)
 
     p_il = sub.add_parser("il", help="Output impermanent loss curve")
@@ -133,6 +238,12 @@ def main(argv=None) -> int:
     p_dash.add_argument("--refresh", type=int, default=30, help="refresh interval in seconds")
     p_dash.add_argument("--once", action="store_true", help="print once and exit")
     p_dash.set_defaults(func=cmd_dashboard)
+
+    p_stake = sub.add_parser("stake", help="Show staking guide for a selected pool")
+    p_stake.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_stake.add_argument("--index", type=int, help="DataFrame index from `top` output (example: 14811)")
+    p_stake.add_argument("--pool", help="DeFiLlama pool id")
+    p_stake.set_defaults(func=cmd_stake)
 
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
