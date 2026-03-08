@@ -6,9 +6,10 @@ import time
 
 import pandas as pd
 
-from ai_yield_tools import score_pools, tag_pools, top_safe_apys
+from ai_yield_tools import DEFAULT_CHAIN, filter_chain, score_pools, tag_pools, top_safe_apys
 from backtest import run_backtest, summarize
 from cache_utils import ensure_today_snapshot, load_snapshot
+from logistic_risk_model import get_logistic_risk_model, score_pools_logistic
 from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 TAG_MAP = {
@@ -25,6 +26,13 @@ def _fmt_pct(x: float) -> str:
 
 def _fmt_num(x: float) -> str:
     return f"{x:,.2f}"
+
+
+def _fmt_score(x: float) -> str:
+    if pd.isna(x):
+        return ""
+    decimals = 6 if abs(float(x)) < 0.01 else 2
+    return f"{float(x):,.{decimals}f}"
 
 
 def _fmt_usd(x: float) -> str:
@@ -45,10 +53,14 @@ def build_dashboard(
     il_mode: str = "heuristic",
     model_type: str = "heuristic",
     tag_filters: list[str] | None = None,
+    retrain: bool = False,
 ) -> str:
     snap_path = ensure_today_snapshot()
-    current_df = load_snapshot(snap_path)
-    if model_type == "xgb":
+    current_df = filter_chain(load_snapshot(snap_path))
+    if model_type == "logit":
+        model, _ = get_logistic_risk_model(retrain=retrain, max_pairs=max(lookback_days, 30))
+        scored = score_pools_logistic(current_df, model)
+    elif model_type == "xgb":
         model = train_xgb_from_cache(max_pairs=max(lookback_days, 30))
         scored = score_pools_xgb(current_df, model)
     else:
@@ -76,6 +88,7 @@ def build_dashboard(
         csv_path=None,
         include_tags=selected_tags or None,
         model_type=model_type,
+        retrain=retrain,
     )
     stats = summarize(eq)
 
@@ -91,7 +104,7 @@ def build_dashboard(
     lines.append("=" * 96)
     lines.append(f"DeFi Risk Dashboard | {now}")
     lines.append(
-        f"Snapshot: {snap_path.name} | Universe: {universe_label} | Min TVL: {_fmt_usd(min_tvl)} | "
+        f"Snapshot: {snap_path.name} | Chain: {DEFAULT_CHAIN} | Universe: {universe_label} | Min TVL: {_fmt_usd(min_tvl)} | "
         f"IL mode: {il_mode} | Model: {model_type}"
     )
     lines.append("=" * 96)
@@ -99,7 +112,12 @@ def build_dashboard(
         f"Pool coverage: {len(tagged):,} total | {len(universe):,} after filters | tags -> "
         f"stable {tag_counts['stable']:,}, lst {tag_counts['lst']:,}, wrapper {tag_counts['wrapper']:,}, index {tag_counts['index']:,}"
     )
-    lines.append("Ranking rule: final_score = 0.5 * risk_score + 0.5 * apy, with APY < 4% floored to 0 before scoring.")
+    if model_type == "xgb":
+        lines.append("Ranking rule: XGBoost sorts by predicted safety score = 1 - P(next-day risk event).")
+    elif model_type == "logit":
+        lines.append("Ranking rule: logistic model sorts by predicted safety score = 1 - P(next-day risk event).")
+    else:
+        lines.append("Ranking rule: heuristic mode sorts by risk_score only; APY and TVL are display metadata plus tie-breakers.")
 
     if stats:
         lines.append(
@@ -113,7 +131,8 @@ def build_dashboard(
         lines.append("Backtest: no equity history available.")
 
     lines.append("-" * 96)
-    lines.append(f"Top {min(top_n, len(top_df))} candidates (sorted by final_score desc)")
+    sort_label = "risk_score desc"
+    lines.append(f"Top {min(top_n, len(top_df))} candidates (sorted by {sort_label})")
     if top_df.empty:
         lines.append("No pools found with current filters.")
     else:
@@ -123,9 +142,9 @@ def build_dashboard(
         if "tvlUsd" in display:
             display["tvlUsd"] = display["tvlUsd"].map(lambda x: _fmt_usd(float(x)) if pd.notna(x) else "")
         if "risk_score" in display:
-            display["risk_score"] = display["risk_score"].map(lambda x: f"{x:,.2f}")
+            display["risk_score"] = display["risk_score"].map(_fmt_score)
         if "final_score" in display:
-            display["final_score"] = display["final_score"].map(lambda x: f"{x:,.2f}")
+            display["final_score"] = display["final_score"].map(_fmt_score)
         lines.append(display.to_string(index=False))
 
     if not eq.empty:
@@ -151,6 +170,7 @@ def run_dashboard_loop(
     tag_filters: list[str] | None,
     refresh_seconds: int,
     once: bool,
+    retrain: bool,
 ) -> int:
     while True:
         print("\033[2J\033[H", end="")  # clear terminal
@@ -162,8 +182,9 @@ def run_dashboard_loop(
                 il_mode=il_mode,
                 model_type=model_type,
                 tag_filters=tag_filters,
+                retrain=retrain,
             )
-        except (XGBUnavailableError, XGBTrainingError) as exc:
+        except (RuntimeError, XGBUnavailableError, XGBTrainingError) as exc:
             output = f"Error: {exc}"
             print(output)
             return 1

@@ -1,6 +1,6 @@
 # Bizarro DefiLlama Pools Toolkit
 
-This project compares the profitability and stability of liquidity pools on [DeFiLlama](https://defillama.com/yields) and adds tooling to rank safer APYs plus simulate impermanent loss.
+This project compares the profitability and stability of [Ethereum](https://ethereum.org/) liquidity pools on [DeFiLlama](https://defillama.com/yields) and adds tooling to rank safer APYs plus simulate impermanent loss.
 
 ### Snapshot Findings (from prior exploration)
 - Average APY across pools is ~2.5%, with occasional spikes up to ~50% (e.g., USDT on Aave) before reverting.
@@ -16,14 +16,20 @@ python3 -m pip install pandas numpy matplotlib openai xgboost  # openai/xgboost 
 
 ## CLI usage
 ```bash
-python3 ai_yield_cli.py top --top 5          # print Top 5 safest APYs today
-python3 ai_yield_cli.py top --top 10 --model xgb   # XGBoost score model (needs cached history)
+python3 ai_yield_cli.py top --top 5          # print Top 5 safest Ethereum APYs today
+python3 ai_yield_cli.py top --top 10 --model logit # retrain logistic coefficients and rank Ethereum pools
+python3 ai_yield_cli.py top --top 10 --model logit --retrain # same effect; explicit retrain flag
+python3 ai_yield_cli.py top --top 10 --model xgb   # XGBoost pure-risk model on Ethereum pools (needs cached history)
 python3 ai_yield_cli.py il --csv il_curve.csv  # write IL curve CSV (omit --csv to print head)
 python3 ai_yield_cli.py find --limit 20        # show LPs tagged as pegged/wrapper/index; add --stable/--lst/--wrapper/--index to focus
 python3 ai_yield_cli.py dashboard --once       # one-shot terminal dashboard
-python3 ai_yield_cli.py dashboard --once --model xgb  # one-shot dashboard using XGBoost model
+python3 ai_yield_cli.py dashboard --once --model logit # one-shot dashboard using saved logistic pure-risk model
+python3 ai_yield_cli.py dashboard --once --model xgb  # one-shot dashboard using XGBoost pure-risk model
 python3 ai_yield_cli.py dashboard              # live dashboard (refresh every 30s)
 python3 ai_yield_cli.py dashboard --stable --top 15 --days 60 --min-tvl 5000000 --il heuristic
+python3 correlation_report.py                  # print latest Ethereum feature correlation matrix
+python3 logistic_risk_model.py --top 10 --retrain # train, save, and inspect the logistic risk model
+python3 save_model_metrics.py                  # retrain, save, and append coefficient drift metrics
 ```
 
 ## Notebook usage
@@ -51,7 +57,7 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 -1.0 * volume_missing_penalty
 -1.0 * il_penalty
 ```
-`final_score = 0.5 * risk_score + 0.5 * apy`, with APY floored: APY < 4% is treated as 0. Pools are sorted by risk_score desc, then apy desc.
+The pool universe is filtered to `3.25 < apy <= 50` before scoring. In `heuristic` mode, `final_score = risk_score`, so ranking is purely risk-driven. Pools are sorted by `risk_score` desc, then `apy` desc, then `tvlUsd` desc as tie-breakers.
 
 ## Impermanent Loss functions (in `il_tools.py`)
 - `il_curve(price_changes)`: DataFrame of IL% vs price change for a 50/50 AMM.
@@ -66,6 +72,9 @@ Open `defillama_api_yields.ipynb` and run the new sections:
 - `cache_utils.py`: cache/fetch daily pool snapshots to `data/`.
 - `backtest.py`: simple top-N rotation backtester using cached snapshots.
 - `runner.py`: loops daily to cache and backtest (Pi-friendly).
+- `correlation_report.py`: prints a correlation matrix for the latest cached Ethereum snapshot.
+- `logistic_risk_model.py`: trains a low-collinearity logistic classifier on cached risk events.
+- `risk_model_utils.py`: shared risk-label and supervised training-frame builders for logistic/XGBoost models.
 - Pool tagging helpers for pegged/wrapper/index live in `ai_yield_tools.tag_pools()` and the CLI `find` command.
 
 ## Optional: LLM setup
@@ -81,13 +90,13 @@ Then run the optional justification cell in the notebook.
   python3 backtest.py --top 10 --days 30 --il heuristic --min-tvl 1_000_000 --csv equity.csv
   ```
 - `--il` modes: `none` (default), `il7d` (use il7d/7 per day when available), `heuristic` (volatility-based haircut).
-- `--model` modes: `heuristic` (hand-tuned formula), `xgb` (XGBoost model trained from cached snapshot history).
+- `--model` modes: `heuristic` (hand-tuned formula), `logit` (low-collinearity logistic classifier trained from cached risk events), `xgb` (XGBoost classifier trained from cached snapshot history to predict next-day risk events).
 - Snapshots are stored in `data/pools_YYYY-MM-DD.json`. The backtest uses the most recent N snapshots available. If none exist, it fetches today’s first.
 - Summary metrics include: cumulative return, annualized return, annualized volatility, max drawdown, sharpe-like ratio, and win rate.
 
 ## Terminal dashboard
 - `dashboard` mode gives a risk-monitoring view directly in terminal:
-  - Current pool coverage and tag counts (stable/LST/wrapper/index)
+  - Current Ethereum pool coverage and tag counts (stable/LST/wrapper/index)
   - Backtest risk/return summary (annualized return, vol, MDD, sharpe-like, win rate)
   - Top-N candidate table based on risk-aware ranking
   - Recent equity curve tail

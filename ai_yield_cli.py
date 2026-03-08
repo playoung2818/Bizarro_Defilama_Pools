@@ -15,11 +15,15 @@ from ai_yield_tools import (
     top_safe_apys,
 )
 from il_tools import il_curve
+from logistic_risk_model import get_logistic_risk_model, score_pools_logistic
 from terminal_dashboard import run_dashboard_loop
 from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 
 def _rank_with_model(args: argparse.Namespace, pools_df: pd.DataFrame) -> pd.DataFrame:
+    if args.model == "logit":
+        model, _ = get_logistic_risk_model(retrain=args.retrain, max_pairs=90)
+        return score_pools_logistic(pools_df, model)
     if args.model == "xgb":
         model = train_xgb_from_cache(max_pairs=90)
         return score_pools_xgb(pools_df, model)
@@ -34,6 +38,13 @@ def _fmt_tokens(value) -> str:
     return str(value)
 
 
+def _format_score_series(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    max_abs = numeric.abs().max(skipna=True)
+    decimals = 6 if pd.notna(max_abs) and max_abs < 0.01 else 3
+    return numeric.round(decimals)
+
+
 def _format_compact_top(df: pd.DataFrame) -> pd.DataFrame:
     view = df.copy()
     if "pool" in view.columns:
@@ -45,9 +56,9 @@ def _format_compact_top(df: pd.DataFrame) -> pd.DataFrame:
             lambda x: f"{x:,.0f}" if pd.notna(x) else ""
         )
     if "risk_score" in view.columns:
-        view["risk_score"] = pd.to_numeric(view["risk_score"], errors="coerce").round(3)
+        view["risk_score"] = _format_score_series(view["risk_score"])
     if "final_score" in view.columns:
-        view["final_score"] = pd.to_numeric(view["final_score"], errors="coerce").round(3)
+        view["final_score"] = _format_score_series(view["final_score"])
     if "url" in view.columns:
         view["url"] = view["url"].astype(str).str.slice(0, 60)
 
@@ -89,6 +100,8 @@ def _print_stake_guide(row: pd.Series) -> None:
 
 
 def cmd_top(args: argparse.Namespace) -> int:
+    if args.model == "logit":
+        args.retrain = True
     try:
         pools_df = fetch_pools_df()
     except FetchError as exc:
@@ -97,7 +110,7 @@ def cmd_top(args: argparse.Namespace) -> int:
 
     try:
         ranked = _rank_with_model(args, pools_df)
-    except (XGBUnavailableError, XGBTrainingError) as exc:
+    except (RuntimeError, XGBUnavailableError, XGBTrainingError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     topn = top_safe_apys(ranked, n=args.top)
@@ -164,6 +177,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         tag_filters=tag_filters or None,
         refresh_seconds=args.refresh,
         once=args.once,
+        retrain=args.retrain,
     )
 
 
@@ -176,7 +190,7 @@ def cmd_stake(args: argparse.Namespace) -> int:
 
     try:
         ranked = _rank_with_model(args, pools_df)
-    except (XGBUnavailableError, XGBTrainingError) as exc:
+    except (RuntimeError, XGBUnavailableError, XGBTrainingError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
@@ -209,7 +223,8 @@ def main(argv=None) -> int:
 
     p_top = sub.add_parser("top", help="Show Top N safe APYs")
     p_top.add_argument("--top", type=int, default=5, help="Number of pools to show (default: 5)")
-    p_top.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_top.add_argument("--model", choices=["heuristic", "logit", "xgb"], default="heuristic", help="scoring model")
+    p_top.add_argument("--retrain", action="store_true", help="retrain the saved logit model before ranking")
     p_top.add_argument("--full", action="store_true", help="show full raw columns")
     p_top.set_defaults(func=cmd_top)
 
@@ -230,7 +245,8 @@ def main(argv=None) -> int:
     p_dash.add_argument("--days", type=int, default=30, help="Lookback days for backtest summary")
     p_dash.add_argument("--min-tvl", type=float, default=1_000_000, help="Minimum TVL filter (USD)")
     p_dash.add_argument("--il", choices=["none", "il7d", "heuristic"], default="heuristic", help="IL penalty mode")
-    p_dash.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_dash.add_argument("--model", choices=["heuristic", "logit", "xgb"], default="heuristic", help="scoring model")
+    p_dash.add_argument("--retrain", action="store_true", help="retrain the saved logit model before ranking")
     p_dash.add_argument("--stable", action="store_true", help="filter to stable-stable pools")
     p_dash.add_argument("--lst", action="store_true", help="filter to LST/ETH pools")
     p_dash.add_argument("--wrapper", action="store_true", help="filter to wrapper pairs")
@@ -240,7 +256,8 @@ def main(argv=None) -> int:
     p_dash.set_defaults(func=cmd_dashboard)
 
     p_stake = sub.add_parser("stake", help="Show staking guide for a selected pool")
-    p_stake.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model")
+    p_stake.add_argument("--model", choices=["heuristic", "logit", "xgb"], default="heuristic", help="scoring model")
+    p_stake.add_argument("--retrain", action="store_true", help="retrain the saved logit model before ranking")
     p_stake.add_argument("--index", type=int, help="DataFrame index from `top` output (example: 14811)")
     p_stake.add_argument("--pool", help="DeFiLlama pool id")
     p_stake.set_defaults(func=cmd_stake)

@@ -12,6 +12,8 @@ import pandas as pd
 
 # Endpoint documented at https://yields.llama.fi/pools
 YIELDS_URL = "https://yields.llama.fi/pools"
+DEFAULT_CHAIN = "Ethereum"
+MIN_APY = 3.25
 
 
 class FetchError(RuntimeError):
@@ -27,7 +29,14 @@ def fetch_pools_df(timeout: int = 30) -> pd.DataFrame:
         raise FetchError(f"Failed to fetch {YIELDS_URL}: {exc}") from exc
 
     pools = data.get("data", [])
-    return pd.DataFrame(pools)
+    return filter_chain(pd.DataFrame(pools))
+
+
+def filter_chain(df: pd.DataFrame, chain: str = DEFAULT_CHAIN) -> pd.DataFrame:
+    """Restrict pool universe to a single chain."""
+    if "chain" not in df.columns:
+        return df.copy()
+    return df[df["chain"].astype(str).str.casefold() == chain.casefold()].copy()
 
 
 def _safe_log10(series: pd.Series) -> pd.Series:
@@ -49,8 +58,8 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     work["volumeUsd7d"] = pd.to_numeric(work.get("volumeUsd7d"), errors="coerce")
     work["volumeUsd1d"] = pd.to_numeric(work.get("volumeUsd1d"), errors="coerce")
     work["apy"] = pd.to_numeric(work.get("apy"), errors="coerce")
-    # Exclude pools above the APY ceiling for conservative screening.
-    work = work[work["apy"].notna() & (work["apy"] <= 50)].copy()
+    # Keep only pools inside the configured APY band.
+    work = work[work["apy"].notna() & (work["apy"] > MIN_APY) & (work["apy"] <= 50)].copy()
 
     work["liquidity_depth"] = _safe_log10(work["tvlUsd"])
     volume_proxy = work["volumeUsd7d"].fillna(work["volumeUsd1d"] * 7)
@@ -87,7 +96,8 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
     Attach heuristic risk and final scores.
 
     risk_score: higher is safer. Combines liquidity depth, inverse volatility,
-    age, and smart-contract risk flag. final_score also rewards APY.
+    age, and smart-contract risk flag. final_score mirrors risk_score so
+    heuristic ranking is purely risk-driven.
     """
     work = prepare_features(df)
 
@@ -99,16 +109,13 @@ def score_pools(df: pd.DataFrame) -> pd.DataFrame:
         - 1.0 * work["volume_missing_penalty"]
         - 1.0 * work["il_penalty"]
     )
-    # Require a minimum APY floor and rebalance weights to emphasize yield more.
-    apy = work["apy"].fillna(0)
-    apy = apy.where(apy >= 4, 0)  # zero out pools with APY < 4%
-    work["final_score"] = work["risk_score"] * 0.5 + apy * 0.5
-    return work.sort_values(["final_score", "risk_score", "apy"], ascending=[False, False, False])
+    work["final_score"] = work["risk_score"]
+    return work.sort_values(["risk_score", "apy", "tvlUsd"], ascending=[False, False, False])
 
 
 def top_safe_apys(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     """Return the top N pools with the highest safety score."""
-    ranked = df.sort_values(["final_score", "risk_score", "apy"], ascending=[False, False, False]).head(n)
+    ranked = df.sort_values(["risk_score", "apy", "tvlUsd"], ascending=[False, False, False]).head(n)
     cols = [
         "pool",
         "project",
@@ -164,7 +171,10 @@ def llm_rank_explanations(
 
 
 __all__ = [
+    "DEFAULT_CHAIN",
     "FetchError",
+    "MIN_APY",
+    "filter_chain",
     "fetch_pools_df",
     "prepare_features",
     "score_pools",

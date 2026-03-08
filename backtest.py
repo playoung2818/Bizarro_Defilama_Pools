@@ -20,8 +20,9 @@ import typing as t
 import numpy as np
 import pandas as pd
 
-from ai_yield_tools import score_pools, tag_pools, top_safe_apys
+from ai_yield_tools import DEFAULT_CHAIN, filter_chain, score_pools, tag_pools, top_safe_apys
 from cache_utils import ensure_today_snapshot, list_snapshots, load_snapshot
+from logistic_risk_model import get_logistic_risk_model, score_pools_logistic
 from xgb_scoring import XGBTrainingError, XGBUnavailableError, score_pools_xgb, train_xgb_from_cache
 
 
@@ -51,13 +52,17 @@ def run_backtest(
     csv_path: Path | None,
     include_tags: list[str] | None = None,
     model_type: str = "heuristic",
+    retrain: bool = False,
 ) -> pd.DataFrame:
     snaps = list_snapshots()
     if not snaps:
         ensure_today_snapshot()
         snaps = list_snapshots()
     snaps = snaps[-days:]  # take the latest N snapshots available
+    logit_model = None
     xgb_model = None
+    if model_type == "logit":
+        logit_model, _ = get_logistic_risk_model(retrain=retrain, max_pairs=max(days, 30))
     if model_type == "xgb":
         xgb_model = train_xgb_from_cache(max_pairs=max(days, 30))
 
@@ -65,7 +70,10 @@ def run_backtest(
     value = 1.0  # start at 1 unit capital
     for snap_path in snaps:
         df = load_snapshot(snap_path)
-        if model_type == "xgb" and xgb_model is not None:
+        df = filter_chain(df)
+        if model_type == "logit" and logit_model is not None:
+            scored = score_pools_logistic(df, logit_model)
+        elif model_type == "xgb" and xgb_model is not None:
             scored = score_pools_xgb(df, xgb_model)
         else:
             scored = score_pools(df)
@@ -131,7 +139,8 @@ def parse_args(argv=None):
     p.add_argument("--lst", action="store_true", help="only include LST/ETH style pools")
     p.add_argument("--wrapper", action="store_true", help="only include wrapper pairs (wBTC/tBTC, wETH/ETH, etc.)")
     p.add_argument("--index", action="store_true", help="only include index/basket style pools")
-    p.add_argument("--model", choices=["heuristic", "xgb"], default="heuristic", help="scoring model for ranking")
+    p.add_argument("--model", choices=["heuristic", "logit", "xgb"], default="heuristic", help="scoring model for ranking")
+    p.add_argument("--retrain", action="store_true", help="retrain the saved logit model before running")
     return p.parse_args(argv)
 
 
@@ -155,13 +164,14 @@ def main(argv=None) -> int:
             args.csv,
             include_tags=tags or None,
             model_type=args.model,
+            retrain=args.retrain,
         )
-    except (XGBUnavailableError, XGBTrainingError) as exc:
+    except (RuntimeError, XGBUnavailableError, XGBTrainingError) as exc:
         print(f"Error: {exc}")
         return 1
     summary = summarize(eq)
     if summary:
-        print("Summary:", summary)
+        print(f"Summary ({DEFAULT_CHAIN} only):", summary)
     else:
         print("No data to backtest.")
     if not eq.empty:
